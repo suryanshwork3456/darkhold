@@ -8,9 +8,9 @@ import (
 type OrderBook struct {
 	ItemID    string
 	BidsMap   map[int64]*PriceLevel
-	BidPrices []int64
+	BidPrices []int64 // sorted ascending; best bid is the LAST element
 	AskMap    map[int64]*PriceLevel
-	AskPrices []int64
+	AskPrices []int64 // sorted ascending; best ask is the FIRST element
 	OrdersMap map[string]*types.Order
 }
 
@@ -25,42 +25,47 @@ func NewOrderBook(itemID string) *OrderBook {
 	}
 }
 
-func (ob *OrderBook) AddOrder(order *types.Order) {
+// AddOrder rests an order on the book. Returns false if the ID already exists.
+func (ob *OrderBook) AddOrder(order *types.Order) bool {
+	if _, dup := ob.OrdersMap[order.ID]; dup {
+		return false
+	}
 	ob.OrdersMap[order.ID] = order
 
-	if order.Side == types.SideBuy {
-		ob.addBid(order)
+	if order.Side == types.Buy {
+		ob.BidPrices = addToSide(ob.BidsMap, ob.BidPrices, order)
 	} else {
-		ob.addAsk(order)
+		ob.AskPrices = addToSide(ob.AskMap, ob.AskPrices, order)
 	}
+	return true
 }
 
-func (ob *OrderBook) addBid(order *types.Order) {
-	price := order.Price
-	pl, exists := ob.BidsMap[price]
+
+func addToSide(levels map[int64]*PriceLevel, prices []int64, order *types.Order) []int64 {
+	pl, exists := levels[order.Price]
 	if !exists {
-		pl = NewPriceLevel(price)
-		ob.BidsMap[price] = pl
-		ob.BidPrices = append(ob.BidPrices, price)
-		sort.Slice(ob.BidPrices, func(i, j int) bool {
-			return ob.BidPrices[i] < ob.BidPrices[j]
-		})
+		pl = NewPriceLevel(order.Price)
+		levels[order.Price] = pl
+		prices = insertPrice(prices, order.Price)
 	}
 	pl.AddOrder(order)
+	return prices
 }
 
-func (ob *OrderBook) addAsk(order *types.Order) {
-	price := order.Price
-	pl, exists := ob.AskMap[price]
-	if !exists {
-		pl = NewPriceLevel(price)
-		ob.AskMap[price] = pl
-		ob.AskPrices = append(ob.AskPrices, price)
-		sort.Slice(ob.AskPrices, func(i, j int) bool {
-			return ob.AskPrices[i] < ob.AskPrices[j]
-		})
+func insertPrice(prices []int64, price int64) []int64 {
+	i := sort.Search(len(prices), func(i int) bool { return prices[i] >= price })
+	prices = append(prices, 0)
+	copy(prices[i+1:], prices[i:])
+	prices[i] = price
+	return prices
+}
+
+func removePrice(prices []int64, target int64) []int64 {
+	i := sort.Search(len(prices), func(i int) bool { return prices[i] >= target })
+	if i < len(prices) && prices[i] == target {
+		return append(prices[:i], prices[i+1:]...)
 	}
-	pl.AddOrder(order)
+	return prices
 }
 
 func (ob *OrderBook) GetBestBid() (int64, bool) {
@@ -77,7 +82,7 @@ func (ob *OrderBook) GetBestAsk() (int64, bool) {
 	return ob.AskPrices[0], true
 }
 
-// CancelOrder removes an order from the book by its ID
+// CancelOrder removes an order from the book by its ID.
 func (ob *OrderBook) CancelOrder(orderID string) *types.Order {
 	order, exists := ob.OrdersMap[orderID]
 	if !exists {
@@ -85,12 +90,11 @@ func (ob *OrderBook) CancelOrder(orderID string) *types.Order {
 	}
 	delete(ob.OrdersMap, orderID)
 
-	if order.Side == types.SideBuy {
+	if order.Side == types.Buy {
 		if pl, ok := ob.BidsMap[order.Price]; ok {
 			pl.RemoveOrder(order.ID)
 			if pl.IsEmpty() {
 				delete(ob.BidsMap, order.Price)
-				// Remove price from BidPrices slice
 				ob.BidPrices = removePrice(ob.BidPrices, order.Price)
 			}
 		}
@@ -99,40 +103,31 @@ func (ob *OrderBook) CancelOrder(orderID string) *types.Order {
 			pl.RemoveOrder(order.ID)
 			if pl.IsEmpty() {
 				delete(ob.AskMap, order.Price)
-				// Remove price from AskPrices slice
 				ob.AskPrices = removePrice(ob.AskPrices, order.Price)
 			}
 		}
 	}
-
 	return order
 }
 
-
-func removePrice(prices []int64, target int64) []int64 {
-	for i, p := range prices {
-		if p == target {
-			return append(prices[:i], prices[i+1:]...)
-		}
+func (ob *OrderBook) Snapshot() types.BookSnapshot {
+	snap := types.BookSnapshot{
+		ItemID: ob.ItemID,
+		Bids:   []types.PriceLevel{},
+		Asks:   []types.PriceLevel{},
 	}
-	return prices
-}
-
-type PriceLevelSummary struct {
-	Price    int64
-	Quantity int64
-}
-
-func (ob *OrderBook) Snapshot() (bids []PriceLevelSummary, asks []PriceLevelSummary) {
-	for _, price := range ob.BidPrices {
-		if pl, ok := ob.BidsMap[price]; ok {
-			bids = append(bids, PriceLevelSummary{Price: price, Quantity: pl.TotalQuantity()})
-		}
+	for i := len(ob.BidPrices) - 1; i >= 0; i-- { 
+		price := ob.BidPrices[i]
+		snap.Bids = append(snap.Bids, types.PriceLevel{
+			Price:    price,
+			Quantity: ob.BidsMap[price].TotalQuantity(),
+		})
 	}
-	for _, price := range ob.AskPrices {
-		if pl, ok := ob.AskMap[price]; ok {
-			asks = append(asks, PriceLevelSummary{Price: price, Quantity: pl.TotalQuantity()})
-		}
+	for _, price := range ob.AskPrices { 
+		snap.Asks = append(snap.Asks, types.PriceLevel{
+			Price:    price,
+			Quantity: ob.AskMap[price].TotalQuantity(),
+		})
 	}
-	return bids, asks
+	return snap
 }
