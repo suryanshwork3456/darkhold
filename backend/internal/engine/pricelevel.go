@@ -1,8 +1,6 @@
 package engine
 
-import (
-	"darkhold/internal/types"
-)
+import "darkhold/internal/types"
 
 type PriceLevel struct {
 	Price  int64
@@ -10,10 +8,7 @@ type PriceLevel struct {
 }
 
 func NewPriceLevel(price int64) *PriceLevel {
-	return &PriceLevel{
-		Price:  price,
-		Orders: []*types.Order{},
-	}
+	return &PriceLevel{Price: price, Orders: []*types.Order{}}
 }
 
 func (pl *PriceLevel) AddOrder(order *types.Order) {
@@ -47,4 +42,17 @@ func (pl *PriceLevel) TotalQuantity() int64 {
 
 func (pl *PriceLevel) IsEmpty() bool {
 	return len(pl.Orders) == 0
+}
+
+
+func (pl *PriceLevel) RemoveOrder(orderID string) bool {
+	for i, o := range pl.Orders {
+		if o.ID == orderID {
+			copy(pl.Orders[i:], pl.Orders[i+1:])
+			pl.Orders[len(pl.Orders)-1] = nil 
+			pl.Orders = pl.Orders[:len(pl.Orders)-1]
+			return true
+		}
+	}
+	return false
 }
